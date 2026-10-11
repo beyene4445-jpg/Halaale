@@ -3,7 +3,11 @@ import logging
 import os
 import random
 import threading
-from aiogram import Bot
+from datetime import datetime, timezone, timedelta
+
+from aiogram import Bot, Dispatcher
+from aiogram.filters import CommandStart
+from aiogram.types import Message
 from flask import Flask
 from google import genai
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -11,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # ================= ቶከኖች እና ከባቢ አየር =================
 TELEGRAM_TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")   # የChannel ወይም Group ID (-100...)
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -27,7 +31,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=port)
 
 
-# ============ 🎲 የተለያዩ ርዕሶች (Daily Variety) ============
+# ============ 🎲 ርዕሶች እና ስታይሎች ============
 TECH_TOPICS = [
     "Artificial Intelligence & Machine Learning",
     "Python programming tips & clean code practices",
@@ -45,8 +49,8 @@ TECH_TOPICS = [
     "Neuroscience & brain-computer interfaces",
     "Software engineering career & productivity",
     "Health science and medicine",
-    "hitsory of most known scientists like albert,nicolas tesla,...",
-    "how the great scientists find and solve complex problems", 
+    "History of famous scientists like Albert Einstein, Nikola Tesla",
+    "How great scientists solved complex problems",
 ]
 
 TECH_STYLES = [
@@ -60,15 +64,72 @@ TECH_STYLES = [
 ]
 
 
+# ============ 🔄 Topic Rotator (no-repeat engine) ============
+class TopicRotator:
+    """
+    ሁሉንም ርዕሶች አንድ ጊዜ ጠቅልሎ ከጨረሰ በኋላ ብቻ ይደግማል።
+    የአሁኑ ርዕስ ከቀዳሚው ጋር እንዳይመሳሰል ያረጋግጣል።
+    """
+    def __init__(self, topics: list):
+        self.topics = list(topics)
+        self.pool = []
+        self.last_topic = None
+
+    def next_topic(self) -> str:
+        if not self.pool:
+            self.pool = self.topics[:]
+            random.shuffle(self.pool)
+            # የመጀመሪያው ከቀዳሚው ርዕስ ጋር እንዳይመሳሰል
+            if self.last_topic and self.pool[0] == self.last_topic and len(self.pool) > 1:
+                self.pool[0], self.pool[1] = self.pool[1], self.pool[0]
+        topic = self.pool.pop(0)
+        self.last_topic = topic
+        return topic
+
+    def remaining(self) -> int:
+        return len(self.pool)
+
+
+rotator = TopicRotator(TECH_TOPICS)
+
+
+# ============ ⏰ ቀጣዩን ሰዓት ማስላት ============
+def get_next_schedule_times():
+    """ቀጣዩ የ3:00 UTC እና 15:00 UTC ሰዓት ይመልሳል።"""
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for h in (3, 15):
+        for d in (0, 1):
+            t = (now + timedelta(days=d)).replace(
+                hour=h, minute=0, second=0, microsecond=0
+            )
+            if t > now:
+                candidates.append(t)
+    candidates.sort()
+    return candidates  # [next1, next2]
+
+
+def format_eat(dt_utc: datetime) -> str:
+    """UTC ን ወደ ኢትዮጵያ ሰዓት (EAT, UTC+3) ይቀይራል።"""
+    eat = dt_utc + timedelta(hours=3)
+    return eat.strftime("%I:%M %p").lstrip("0")
+
+
+def format_utc(dt_utc: datetime) -> str:
+    return dt_utc.strftime("%H:%M")
+
+
 # ============ ዋናው የመልእክት መላኪያ ተግባር ============
 async def send_tech_insight_message(time_label: str):
     if not GROUP_CHAT_ID:
         logging.error("ስህተት: GROUP_CHAT_ID አልተሰጠም!")
         return
 
-    # በየሩን የተለያየ ርዕስ እና ስታይል ይመርጣል
-    topic = random.choice(TECH_TOPICS)
+    # 🔄 በየሩን የተለየ ርዕስ (አይደገም)
+    topic = rotator.next_topic()
     style = random.choice(TECH_STYLES)
+
+    logging.info(f"📝 የተመረጠው ርዕስ: {topic} (ቀሪ: {rotator.remaining()})")
 
     try:
         prompt = (
@@ -94,11 +155,9 @@ async def send_tech_insight_message(time_label: str):
 
         message_text = response.text.strip()
 
-        # ✅ ማረጋገጫ: መልእክቱ በ (💻) Halaale Tech መጨረሱን አረጋግጥ
         if "(💻) Halaale Tech" not in message_text:
             message_text += "\n\n(💻) Halaale Tech"
 
-        # ወደ Channel / Group መላክ
         await bot.send_message(
             chat_id=GROUP_CHAT_ID,
             text=message_text,
@@ -110,14 +169,68 @@ async def send_tech_insight_message(time_label: str):
         logging.error(f"❌ መልእክት በመላክ ላይ ስህተት ተፈጥሯል: {e}")
 
 
+# ============ 🎉 /start Handler ============
+dp = Dispatcher()
+
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    next_times = get_next_schedule_times()
+    n1, n2 = next_times[0], next_times[1]
+
+    user_name = message.from_user.first_name or "ወዳጄ"
+
+    welcome_text = (
+        f"🎉 እንኳን ደህና መጡ {user_name}!\n\n"
+        f"🚀 Welcome to Halaale Tech Automation Bot\n"
+        f"የቴክኖሎጂ እና የሳይንስ ዕውቀት በየቀኑ ወደ ግሩፓችን የሚላክበት አውቶሜሽን ቦት ነኝ።\n\n"
+        f"📌 በቀን ሁለት ጊዜ አዲስ ይዘት አቀርባለሁ፦\n"
+        f"   ☀️ 3:00 UTC (6:00 ጠዋት በኢትዮጵያ) — Morning Tech Insight\n"
+        f"   🌙 15:00 UTC (6:00 ከሰዓት በኢትዮጵያ) — Afternoon Tech Insight\n\n"
+        f"⏰ ቀጣዩ መልእክት ይላካል፦\n"
+        f"   🟢 በ{format_eat(n1)} EAT ({format_utc(n1)} UTC)\n"
+        f"   🟡 ከዛም በ{format_eat(n2)} EAT ({format_utc(n2)} UTC)\n\n"
+        f"📚 የምሰጣቸው ዘርፎች (rotating):\n"
+        f"   • AI & Machine Learning\n"
+        f"   • Python & Software Engineering\n"
+        f"   • Telegram Mini Apps\n"
+        f"   • Cybersecurity\n"
+        f"   • Space & Astronomy\n"
+        f"   • Biotech & Medical Science\n"
+        f"   • Physics & Quantum Computing\n"
+        f"   • Robotics & IoT\n"
+        f"   • እና ተጨማሪ...\n\n"
+        f"💡 ሁልጊዜም አዲስ እና የተለየ ይዘት እንዲደርስህ በ rotation ስርዓት እሰራለሁ።\n\n"
+        f"እንኳን በደህና መጣህ! 🩷\n\n"
+        f"(💻) Halaale Tech"
+    )
+
+    try:
+        await message.answer(welcome_text, disable_web_page_preview=True)
+        logging.info(f"👋 /start ከ {user_name} (ID: {message.from_user.id})")
+    except Exception as e:
+        logging.error(f"❌ /start ላይ ስህተት: {e}")
+
+
+@dp.message()
+async def fallback(message: Message):
+    """ሌላ ጽሑፍ ከተላከ — አጭር መመሪያ ይሰጣል።"""
+    try:
+        await message.answer(
+            "🤖 እኔ አውቶሜሽን ቦት ነኝ። /start ብቻ ተጠቀም።\n\n(💻) Halaale Tech"
+        )
+    except Exception:
+        pass
+
+
 # ================= ዋናው ፕሮግራም =================
 async def main() -> None:
-    # Flask ሰርቨርን በጀርባ ማስጀመር (Render ሄልዝ ቼክ)
+    # Flask ሰርቨርን በጀርባ (Render health check)
     threading.Thread(target=run_flask, daemon=True).start()
 
+    # Scheduler
     scheduler = AsyncIOScheduler()
 
-    # ⏰ 1ኛ ሰዓት — 3:00 UTC (ኢትዮጵያ 6:00 ጠዋት) ☀️
     scheduler.add_job(
         send_tech_insight_message,
         'cron',
@@ -125,8 +238,6 @@ async def main() -> None:
         minute=0,
         args=["Morning Tech Insight (ማለዳ)"],
     )
-
-    # ⏰ 2ኛ ሰዓት — 15:00 UTC (ኢትዮጵያ 6:00 ከሰዓት) 🌙
     scheduler.add_job(
         send_tech_insight_message,
         'cron',
@@ -136,13 +247,17 @@ async def main() -> None:
     )
 
     scheduler.start()
-    logging.info("🚀 Halaale Tech Solutions ቦት ተጀመረ — 3:00 UTC እና 15:00 UTC ላይ ይልካል።")
+    logging.info("🚀 Halaale Tech Bot ተጀመረ — 3:00 UTC እና 15:00 UTC ላይ ይልካል።")
+    logging.info("🤖 /start command ዝግጁ ነው።")
 
-    # 🧪 የሙከራ መስመር — ከተረጋገጠ በኋላ አጥፋው
+    # 🧪 ፈጣን ሙከራ — ከተረጋገጠ በኋላ comment አድርገው
     # await send_tech_insight_message("Test Run 🧪")
 
-    while True:
-        await asyncio.sleep(3600)
+    # ሁለቱን አንድ ላይ ማስኬድ
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
