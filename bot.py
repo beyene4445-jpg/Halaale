@@ -79,7 +79,6 @@ class TopicRotator:
         if not self.pool:
             self.pool = self.topics[:]
             random.shuffle(self.pool)
-            # የመጀመሪያው ከቀዳሚው ርዕስ ጋር እንዳይመሳሰል
             if self.last_topic and self.pool[0] == self.last_topic and len(self.pool) > 1:
                 self.pool[0], self.pool[1] = self.pool[1], self.pool[0]
         topic = self.pool.pop(0)
@@ -95,13 +94,15 @@ rotator = TopicRotator(TECH_TOPICS)
 
 # ============ ⏰ ቀጣዩን ሰዓት ማስላት ============
 def get_next_schedule_times():
-    """ቀጣዩ የ3:00 UTC እና 15:00 UTC ሰዓት ይመልሳል።"""
+    """ቀጣዩን የ2:59 UTC እና 14:49 UTC ሰዓት ይመልሳል።"""
     now = datetime.now(timezone.utc)
     candidates = []
-    for h in (3, 15):
+    # 2:59 UTC እና 14:49 UTC
+    schedule_hours_minutes = [(2, 59), (14, 49)]
+    for h, m in schedule_hours_minutes:
         for d in (0, 1):
             t = (now + timedelta(days=d)).replace(
-                hour=h, minute=0, second=0, microsecond=0
+                hour=h, minute=m, second=0, microsecond=0
             )
             if t > now:
                 candidates.append(t)
@@ -125,7 +126,6 @@ async def send_tech_insight_message(time_label: str):
         logging.error("ስህተት: GROUP_CHAT_ID አልተሰጠም!")
         return
 
-    # 🔄 በየሩን የተለየ ርዕስ (አይደገም)
     topic = rotator.next_topic()
     style = random.choice(TECH_STYLES)
 
@@ -185,8 +185,8 @@ async def cmd_start(message: Message):
         f"🚀 Welcome to Halaale Tech Automation Bot\n"
         f"የቴክኖሎጂ እና የሳይንስ ዕውቀት በየቀኑ ወደ ግሩፓችን የሚላክበት አውቶሜሽን ቦት ነኝ።\n\n"
         f"📌 በቀን ሁለት ጊዜ አዲስ ይዘት አቀርባለሁ፦\n"
-        f"   ☀️ 3:00 UTC (6:00 ጠዋት በኢትዮጵያ) — Morning Tech Insight\n"
-        f"   🌙 15:00 UTC (6:00 ከሰዓት በኢትዮጵያ) — Afternoon Tech Insight\n\n"
+        f"   ☀️ 2:59 UTC (5:59 ጠዋት በኢትዮጵያ) — Morning Tech Insight\n"
+        f"   🌙 14:49 UTC (5:49 ከሰዓት በኢትዮጵያ) — Afternoon Tech Insight\n\n"
         f"⏰ ቀጣዩ መልእክት ይላካል፦\n"
         f"   🟢 በ{format_eat(n1)} EAT ({format_utc(n1)} UTC)\n"
         f"   🟡 ከዛም በ{format_eat(n2)} EAT ({format_utc(n2)} UTC)\n\n"
@@ -231,29 +231,26 @@ async def main() -> None:
     # Scheduler
     scheduler = AsyncIOScheduler()
 
+    # ሰዓቶቹ ወደ 2:59 UTC እና 14:49 UTC ተስተካክለዋል
     scheduler.add_job(
         send_tech_insight_message,
         'cron',
-        hour=3,
-        minute=0,
+        hour=2,
+        minute=59,
         args=["Morning Tech Insight (ማለዳ)"],
     )
     scheduler.add_job(
         send_tech_insight_message,
         'cron',
-        hour=15,
-        minute=0,
+        hour=14,
+        minute=49,
         args=["Afternoon Tech Insight (ከሰዓት)"],
     )
 
     scheduler.start()
-    logging.info("🚀 Halaale Tech Bot ተጀመረ — 3:00 UTC እና 15:00 UTC ላይ ይልካል።")
+    logging.info("🚀 Halaale Tech Bot ተጀመረ — 2:59 UTC እና 14:49 UTC ላይ ይልካል።")
     logging.info("🤖 /start command ዝግጁ ነው።")
 
-    # 🧪 ፈጣን ሙከራ — ከተረጋገጠ በኋላ comment አድርገው
-    # await send_tech_insight_message("Test Run 🧪")
-
-    # ሁለቱን አንድ ላይ ማስኬድ
     try:
         await dp.start_polling(bot)
     finally:
